@@ -1,0 +1,42 @@
+services:
+  downloads-monitorr:
+    build:
+      context: .
+    container_name: downloads-monitorr
+    environment:
+      PORT: "${PORT:-3020}"
+      QBITTORRENT_URL: "${QBITTORRENT_URL:-http://localhost:8080}"
+      QBITTORRENT_USERNAME: "${QBITTORRENT_USERNAME:-admin}"
+      QBITTORRENT_PASSWORD: "${QBITTORRENT_PASSWORD:-change-me}"
+      RADARR_URL: "${RADARR_URL:-}"
+      RADARR_API_KEY: "${RADARR_API_KEY:-}"
+      SONARR_URL: "${SONARR_URL:-}"
+      SONARR_API_KEY: "${SONARR_API_KEY:-}"
+      WHISPARR_URL: "${WHISPARR_URL:-}"
+      WHISPARR_API_KEY: "${WHISPARR_API_KEY:-}"
+      STALLED_THRESHOLD_MINUTES: "${STALLED_THRESHOLD_MINUTES:-30}"
+      POLL_INTERVAL_SECONDS: "${POLL_INTERVAL_SECONDS:-30}"
+    ports:
+      - "${PORT:-3020}:${PORT:-3020}"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_DOCKER_NETWORK:-proxy}"
+      - "traefik.http.routers.downloads-monitorr.rule=Host(`${TRAEFIK_HOST:-downloads-monitorr.example.com}`)"
+      - "traefik.http.routers.downloads-monitorr.entrypoints=websecure"
+      - "traefik.http.routers.downloads-monitorr.tls=true"
+      - "traefik.http.routers.downloads-monitorr.tls.certresolver=cloudflare"
+      - "traefik.http.services.downloads-monitorr.loadbalancer.server.port=${TRAEFIK_SERVICE_PORT:-3020}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || 3020) + '/api/status').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - traefik
+
+networks:
+  traefik:
+    external: true
+    name: "${TRAEFIK_DOCKER_NETWORK:-proxy}"

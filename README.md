@@ -55,6 +55,22 @@ Open:
 http://localhost:3020
 ```
 
+## Docker
+
+Build and run with Docker Compose:
+
+```powershell
+docker compose up -d --build
+```
+
+The container reads configuration from `.env` and maps `${PORT:-3020}` to the same port inside the container.
+
+Stop it with:
+
+```powershell
+docker compose down
+```
+
 For development, run:
 
 ```powershell
