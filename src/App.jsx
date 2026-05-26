@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const VIEW_COPY = {
   hanging: {
     title: "Hanging downloads",
-    subtitle: "Torrents observed in stalled download state beyond your threshold.",
+    subtitle: "Stalled downloads whose last activity is older than your threshold.",
   },
   stalled: {
     title: "All stalled downloads",
@@ -32,6 +32,8 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadError, setLoadError] = useState(null);
+  const [actionMessage, setActionMessage] = useState(null);
+  const [replacingHashes, setReplacingHashes] = useState(() => new Set());
   const refreshTimer = useRef(null);
 
   useEffect(() => {
@@ -64,7 +66,14 @@ export default function App() {
           return true;
         }
 
-      return [torrent.name, torrent.category, torrent.tags, torrent.state, ...(torrent.arrQueueApps || [])]
+        return [
+          torrent.name,
+          torrent.category,
+          torrent.tags,
+          torrent.state,
+          ...(torrent.arrQueueApps || []),
+          ...(torrent.arrQueues || []).map((queue) => queue.mediaTitle || queue.title),
+        ]
           .filter(Boolean)
           .some((value) => String(value).toLowerCase().includes(normalizedQuery));
       });
@@ -98,6 +107,53 @@ export default function App() {
     clearTimeout(refreshTimer.current);
     const interval = Number(seconds || 30) * 1000;
     refreshTimer.current = setTimeout(() => refresh(false), Math.max(5000, interval));
+  }
+
+  async function replaceTorrent(torrent) {
+    const appNames = (torrent.arrQueueApps || []).join(", ");
+    const confirmed = window.confirm(
+      `Delete "${torrent.name}" and its data from qBittorrent, then blocklist and search for a replacement in ${appNames}?`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setActionMessage(null);
+    setReplacingHashes((current) => new Set(current).add(torrent.hash));
+
+    try {
+      const response = await fetch(`/api/torrents/${encodeURIComponent(torrent.hash)}/replace`, {
+        method: "POST",
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error || `HTTP ${response.status}`);
+      }
+
+      const failedApps = payload.arrResults.filter((result) => !result.ok);
+      const successfulApps = payload.arrResults.filter((result) => result.ok).map((result) => result.appName);
+
+      setActionMessage({
+        type: failedApps.length ? "warning" : "success",
+        text: failedApps.length
+          ? `Deleted from qBittorrent, but some Arr actions failed: ${failedApps.map((result) => `${result.appName}: ${result.error}`).join(" | ")}`
+          : `Deleted from qBittorrent and triggered replacement search in ${successfulApps.join(", ")}.`,
+      });
+      await refresh(true);
+    } catch (error) {
+      setActionMessage({
+        type: "error",
+        text: error.message,
+      });
+    } finally {
+      setReplacingHashes((current) => {
+        const next = new Set(current);
+        next.delete(torrent.hash);
+        return next;
+      });
+    }
   }
 
   const summary = payload?.summary || {
@@ -141,6 +197,7 @@ export default function App() {
         <ConnectionItem label="Polling" value={config ? `${config.pollIntervalSeconds}s` : "-"} />
       </section>
       <ArrErrors errors={arrErrors} />
+      <ActionMessage message={actionMessage} />
 
       <section className="toolbar">
         <div className="tabs" role="tablist" aria-label="Torrent filters">
@@ -186,11 +243,17 @@ export default function App() {
                 <th>Down</th>
                 <th>ETA</th>
                 <th>Size</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
               {filteredTorrents.map((torrent) => (
-                <TorrentRow key={torrent.hash} torrent={torrent} />
+                <TorrentRow
+                  key={torrent.hash}
+                  torrent={torrent}
+                  isReplacing={replacingHashes.has(torrent.hash)}
+                  onReplace={replaceTorrent}
+                />
               ))}
             </tbody>
           </table>
@@ -236,24 +299,35 @@ function ArrErrors({ errors }) {
   );
 }
 
-function TorrentRow({ torrent }) {
+function ActionMessage({ message }) {
+  if (!message) {
+    return null;
+  }
+
+  return <section className={`alert ${message.type}`.trim()}>{message.text}</section>;
+}
+
+function TorrentRow({ torrent, isReplacing, onReplace }) {
   const stateClass = torrent.isOverThreshold ? "danger" : torrent.isStalledDownload ? "warning" : "";
   const stalledText = torrent.isStalledDownload ? duration(torrent.stalledForMs) : "-";
   const tags = [torrent.category, torrent.tags].filter(Boolean).join(" / ");
+  const canReplace = (torrent.arrQueues || []).length > 0;
+  const arrTitles = uniqueValues((torrent.arrQueues || []).map((queue) => queue.mediaTitle || queue.title));
 
   return (
     <tr>
-      <td>
+      <td data-label="Name">
         <div className="torrent-name">{torrent.name || torrent.hash}</div>
+        <ArrItemNames titles={arrTitles} />
         <div className="torrent-meta">{tags || torrent.savePath || "No category"}</div>
       </td>
-      <td>
+      <td data-label="State">
         <span className={`pill ${stateClass}`.trim()}>{torrent.state || "unknown"}</span>
       </td>
-      <td>
+      <td data-label="Arr queue">
         <ArrQueueBadges queues={torrent.arrQueues || []} />
       </td>
-      <td>
+      <td data-label="Progress">
         <div className="progress">
           <strong>{percent(torrent.progress)}</strong>
           <div className="bar" aria-hidden="true">
@@ -261,15 +335,33 @@ function TorrentRow({ torrent }) {
           </div>
         </div>
       </td>
-      <td className={torrent.isOverThreshold ? "danger-text" : ""}>{stalledText}</td>
-      <td>{torrent.lastActivity ? relativeTime(torrent.lastActivity) : <span className="muted">Unknown</span>}</td>
-      <td>
+      <td data-label="Stalled for" className={torrent.isOverThreshold ? "danger-text" : ""}>{stalledText}</td>
+      <td data-label="Last activity">{torrent.lastActivity ? relativeTime(torrent.lastActivity) : <span className="muted">Unknown</span>}</td>
+      <td data-label="Seeds">
         {torrent.seeds} / {torrent.leeches}
       </td>
-      <td>{bytes(torrent.downloadSpeed)}/s</td>
-      <td>{eta(torrent.eta)}</td>
-      <td>{bytes(torrent.size)}</td>
+      <td data-label="Down">{bytes(torrent.downloadSpeed)}/s</td>
+      <td data-label="ETA">{eta(torrent.eta)}</td>
+      <td data-label="Size">{bytes(torrent.size)}</td>
+      <td data-label="Action">
+        <button className="danger-action" type="button" disabled={!canReplace || isReplacing} onClick={() => onReplace(torrent)}>
+          {isReplacing ? "Replacing..." : "Replace"}
+        </button>
+      </td>
     </tr>
+  );
+}
+
+function ArrItemNames({ titles }) {
+  if (titles.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="arr-item-names">
+      <span>Media</span>
+      {titles.join(" / ")}
+    </div>
   );
 }
 
@@ -287,6 +379,10 @@ function ArrQueueBadges({ queues }) {
       ))}
     </div>
   );
+}
+
+function uniqueValues(values) {
+  return [...new Set(values.filter(Boolean))];
 }
 
 function percent(value) {

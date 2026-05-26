@@ -71,9 +71,19 @@ The Vite dev server proxies `/api` requests to the Node backend on `PORT`.
 
 ## How Hanging Detection Works
 
-qBittorrent reports torrent state, but it does not report the exact time a torrent entered `stalledDL`. downloads-monitorr starts timing a torrent when it first observes an incomplete torrent in a stalled state. If it remains stalled longer than `STALLED_THRESHOLD_MINUTES`, it appears in the **Hanging** view.
+A torrent appears in the **Hanging** view when qBittorrent reports it as a stalled incomplete download and its `last_activity` age is greater than `STALLED_THRESHOLD_MINUTES`.
 
-The timer resets when the torrent leaves the stalled state, completes, or disappears from qBittorrent.
+The stalled timer is still shown for context, but the threshold is applied to qBittorrent's last activity timestamp.
+
+## Replacement Action
+
+When a torrent is matched to a Radarr, Sonarr, or Whisparr queue item, the dashboard shows a **Replace** button. After confirmation, downloads-monitorr:
+
+1. Deletes the torrent and its files from qBittorrent.
+2. Removes and blocklists the matching Arr queue item.
+3. Triggers a replacement search in the matching Arr app.
+
+The button is disabled for torrents that are not matched to an Arr queue item.
 
 ## Scripts
 

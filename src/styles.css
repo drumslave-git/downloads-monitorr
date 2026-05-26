@@ -166,6 +166,18 @@ h1 {
   padding: 12px 14px;
 }
 
+.alert.success {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.1);
+  color: #bbf7d0;
+}
+
+.alert.error {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.1);
+  color: #fecaca;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -235,13 +247,13 @@ h1 {
 }
 
 .table-wrap {
-  overflow-x: auto;
+  overflow-x: visible;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1140px;
+  table-layout: auto;
 }
 
 th,
@@ -264,14 +276,32 @@ tbody tr:hover {
 }
 
 .torrent-name {
-  max-width: 440px;
+  max-width: 32rem;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .torrent-meta {
   margin-top: 4px;
   color: var(--muted);
   font-size: 0.84rem;
+}
+
+.arr-item-names {
+  margin-top: 6px;
+  color: #bae6fd;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.arr-item-names span {
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .pill {
@@ -304,11 +334,29 @@ tbody tr:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  min-width: 120px;
+}
+
+.danger-action {
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  border-radius: 999px;
+  background: rgba(239, 68, 68, 0.14);
+  color: #fecaca;
+  cursor: pointer;
+  padding: 7px 11px;
+  white-space: nowrap;
+}
+
+.danger-action:hover:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.9);
+}
+
+.danger-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .progress {
-  min-width: 130px;
+  min-width: 7rem;
 }
 
 .bar {
@@ -359,11 +407,88 @@ tbody tr:hover {
   .search input {
     width: 100%;
   }
+
+  .table-wrap {
+    padding: 12px;
+  }
+
+  table,
+  thead,
+  tbody,
+  tr,
+  th,
+  td {
+    display: block;
+  }
+
+  thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  tbody tr {
+    border: 1px solid rgba(41, 50, 65, 0.76);
+    border-radius: 16px;
+    background: rgba(15, 23, 42, 0.38);
+    margin-bottom: 12px;
+    padding: 10px 12px;
+  }
+
+  tbody tr:hover {
+    background: rgba(56, 189, 248, 0.07);
+  }
+
+  td {
+    display: grid;
+    grid-template-columns: minmax(7rem, 34%) minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+    border-bottom: 1px solid rgba(41, 50, 65, 0.52);
+    padding: 9px 0;
+  }
+
+  td:last-child {
+    border-bottom: 0;
+  }
+
+  td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .torrent-name {
+    max-width: none;
+  }
+
+  .progress {
+    min-width: 0;
+  }
 }
 
 @media (max-width: 560px) {
   .status-strip,
   .connection-card {
     grid-template-columns: 1fr;
+  }
+
+  .shell {
+    width: min(100% - 20px, 1400px);
+  }
+
+  td {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .danger-action {
+    width: 100%;
   }
 }

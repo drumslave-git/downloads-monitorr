@@ -130,6 +130,21 @@ class QBittorrentClient {
     return response.json();
   }
 
+  async deleteTorrent(hash, deleteFiles = true) {
+    const body = new URLSearchParams({
+      hashes: hash,
+      deleteFiles: String(deleteFiles),
+    });
+
+    await this.request("/api/v2/torrents/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    });
+  }
+
   apiUrl(pathname) {
     const basePath = this.baseUrl.pathname.replace(/\/+$/, "");
     const apiPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
@@ -175,11 +190,7 @@ class ArrQueueClient {
         includeUnknownMovieItems: true,
         includeUnknownSeriesItems: true,
       }), {
-        headers: {
-          Accept: "application/json",
-          "X-Api-Key": this.apiKey,
-          "User-Agent": "downloads-monitorr/1.0",
-        },
+        headers: this.headers(),
       });
 
       if (!response.ok) {
@@ -200,14 +211,104 @@ class ArrQueueClient {
   }
 
   normalizeQueueItem(item) {
+    const mediaTitle = item.movie?.title || item.series?.title || item.artist?.artistName || item.artist?.title || "";
+
     return {
       appId: this.id,
       appName: this.name,
+      queueId: item.id,
       title: item.title || item.sourceTitle || item.movie?.title || item.series?.title || "Unknown item",
+      mediaTitle,
       downloadId: item.downloadId || item.downloadClientId || "",
+      movieId: item.movieId || item.movie?.id || null,
+      seriesId: item.seriesId || item.series?.id || null,
+      episodeId: item.episodeId || item.episode?.id || null,
+      episodeIds: Array.isArray(item.episodeIds) ? item.episodeIds : item.episodeId ? [item.episodeId] : [],
       status: item.status || "",
       trackedDownloadStatus: item.trackedDownloadStatus || "",
       protocol: item.protocol || "",
+    };
+  }
+
+  async blocklistQueueItem(queueId) {
+    if (!queueId) {
+      throw new Error(`${this.name} queue item is missing id`);
+    }
+
+    const response = await fetch(this.apiUrl(`/api/v3/queue/${queueId}`, {
+      removeFromClient: false,
+      blocklist: true,
+    }), {
+      method: "DELETE",
+      headers: this.headers(),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`${this.name} blocklist request failed: HTTP ${response.status} ${text || response.statusText}`);
+    }
+  }
+
+  async searchReplacement(queueItem) {
+    const command = this.searchCommand(queueItem);
+
+    if (!command) {
+      throw new Error(`${this.name} queue item does not include enough IDs to trigger a replacement search`);
+    }
+
+    const response = await fetch(this.apiUrl("/api/v3/command"), {
+      method: "POST",
+      headers: {
+        ...this.headers(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(command),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`${this.name} search command failed: HTTP ${response.status} ${text || response.statusText}`);
+    }
+
+    return response.json();
+  }
+
+  searchCommand(queueItem) {
+    if (this.id === "sonarr") {
+      const episodeIds = queueItem.episodeIds.length ? queueItem.episodeIds : queueItem.episodeId ? [queueItem.episodeId] : [];
+
+      if (episodeIds.length > 0) {
+        return {
+          name: "EpisodeSearch",
+          episodeIds,
+        };
+      }
+
+      if (queueItem.seriesId) {
+        return {
+          name: "SeriesSearch",
+          seriesId: queueItem.seriesId,
+        };
+      }
+
+      return null;
+    }
+
+    if (queueItem.movieId) {
+      return {
+        name: "MoviesSearch",
+        movieIds: [queueItem.movieId],
+      };
+    }
+
+    return null;
+  }
+
+  headers() {
+    return {
+      Accept: "application/json",
+      "X-Api-Key": this.apiKey,
+      "User-Agent": "downloads-monitorr/1.0",
     };
   }
 
@@ -275,6 +376,47 @@ class ArrQueueService {
     }
 
     return index;
+  }
+
+  async replaceQueueItems(queueItems) {
+    const results = [];
+
+    for (const queueItem of queueItems) {
+      const client = this.clients.find((item) => item.id === queueItem.appId);
+
+      if (!client) {
+        results.push({
+          appId: queueItem.appId,
+          appName: queueItem.appName,
+          title: queueItem.title,
+          ok: false,
+          error: "Arr app is not configured",
+        });
+        continue;
+      }
+
+      try {
+        await client.blocklistQueueItem(queueItem.queueId);
+        const command = await client.searchReplacement(queueItem);
+        results.push({
+          appId: queueItem.appId,
+          appName: queueItem.appName,
+          title: queueItem.title,
+          ok: true,
+          commandId: command.id || null,
+        });
+      } catch (error) {
+        results.push({
+          appId: queueItem.appId,
+          appName: queueItem.appName,
+          title: queueItem.title,
+          ok: false,
+          error: error.message,
+        });
+      }
+    }
+
+    return results;
   }
 }
 
@@ -345,7 +487,7 @@ class TorrentTracker {
       arrQueueApps: arrQueues.map((queue) => queue.appName),
       isDownload: numberOrZero(torrent.progress) < 1,
       isStalledDownload: Boolean(record?.stalledSince),
-      isOverThreshold: stalledForMs >= STALLED_THRESHOLD_MS,
+      isOverThreshold: Boolean(record?.stalledSince) && lastActivityAgeMs !== null && lastActivityAgeMs >= STALLED_THRESHOLD_MS,
     };
   }
 }
@@ -387,6 +529,42 @@ async function pollTorrents() {
   return state.pollInFlight;
 }
 
+async function replaceTorrent(hash) {
+  const normalizedHash = normalizeDownloadId(hash);
+
+  if (!normalizedHash) {
+    throw new Error("Torrent hash is required");
+  }
+
+  const torrent = state.torrents.find((item) => normalizeDownloadId(item.hash) === normalizedHash);
+
+  if (!torrent) {
+    throw new Error("Torrent is not currently known. Refresh the dashboard and try again.");
+  }
+
+  if (!torrent.arrQueues.length) {
+    throw new Error("Torrent is not matched to a Radarr, Sonarr, or Whisparr queue item");
+  }
+
+  await client.deleteTorrent(torrent.hash, true);
+  const arrResults = await arrQueueService.replaceQueueItems(torrent.arrQueues);
+  await pollTorrents().catch((error) => {
+    console.error(error.message);
+  });
+
+  return {
+    torrent: {
+      hash: torrent.hash,
+      name: torrent.name,
+    },
+    qbittorrent: {
+      deleted: true,
+      deleteFiles: true,
+    },
+    arrResults,
+  };
+}
+
 const server = http.createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url, `http://${request.headers.host}`);
@@ -398,6 +576,13 @@ const server = http.createServer(async (request, response) => {
     if (requestUrl.pathname === "/api/refresh" && request.method === "POST") {
       await pollTorrents();
       return sendJson(response, buildStatusPayload());
+    }
+
+    const replaceMatch = requestUrl.pathname.match(/^\/api\/torrents\/([^/]+)\/replace$/);
+
+    if (replaceMatch && request.method === "POST") {
+      const result = await replaceTorrent(decodeURIComponent(replaceMatch[1]));
+      return sendJson(response, result);
     }
 
     if (requestUrl.pathname.startsWith("/api/")) {
@@ -467,7 +652,7 @@ function sortTorrents(a, b) {
     return a.isStalledDownload ? -1 : 1;
   }
 
-  return b.stalledForMs - a.stalledForMs || a.name.localeCompare(b.name);
+  return (b.lastActivityAgeMs || 0) - (a.lastActivityAgeMs || 0) || b.stalledForMs - a.stalledForMs || a.name.localeCompare(b.name);
 }
 
 function serveStatic(pathname, response) {
