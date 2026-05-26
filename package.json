@@ -1,0 +1,26 @@
+{
+  "name": "downloads-monitorr",
+  "version": "1.0.0",
+  "description": "Local dashboard for monitoring stalled qBittorrent downloads.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "npm run build && node src/server.js",
+    "serve": "node src/server.js",
+    "dev": "concurrently \"node --watch src/server.js\" \"vite --host 127.0.0.1\"",
+    "build": "vite build",
+    "check": "node --check src/server.js && npm run build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^9.2.1",
+    "vite": "^8.0.14"
+  }
+}
