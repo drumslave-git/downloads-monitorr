@@ -28,11 +28,19 @@ PORT=3020
 QBITTORRENT_URL=http://localhost:8080
 QBITTORRENT_USERNAME=admin
 QBITTORRENT_PASSWORD=change-me
+RADARR_URL=
+RADARR_API_KEY=
+SONARR_URL=
+SONARR_API_KEY=
+WHISPARR_URL=
+WHISPARR_API_KEY=
 STALLED_THRESHOLD_MINUTES=30
 POLL_INTERVAL_SECONDS=30
 ```
 
 downloads-monitorr logs in through the qBittorrent WebUI API, stores the returned WebUI session cookie in memory, and sends that cookie with authenticated API requests.
+
+Radarr, Sonarr, and Whisparr are optional. Configure any app by setting both its URL and API key. The API key is available in each app under `Settings -> General -> Security`. downloads-monitorr reads `/api/v3/queue` from each configured app and marks matching torrents by queue `downloadId` first, with a title fallback for clients that do not expose a hash-like ID.
 
 Start the dashboard:
 

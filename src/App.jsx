@@ -64,7 +64,7 @@ export default function App() {
           return true;
         }
 
-        return [torrent.name, torrent.category, torrent.tags, torrent.state]
+      return [torrent.name, torrent.category, torrent.tags, torrent.state, ...(torrent.arrQueueApps || [])]
           .filter(Boolean)
           .some((value) => String(value).toLowerCase().includes(normalizedQuery));
       });
@@ -105,10 +105,12 @@ export default function App() {
     downloading: "-",
     stalled: "-",
     hanging: "-",
+    inArrQueue: "-",
   };
   const config = payload?.config;
   const statusMessage = loadError || payload?.lastError?.message || (config ? `Connected to ${config.qbittorrentUrl}` : "Starting...");
   const isError = Boolean(loadError || payload?.lastError);
+  const arrErrors = payload?.arr?.errors || [];
   const copy = VIEW_COPY[activeFilter];
 
   return (
@@ -129,6 +131,7 @@ export default function App() {
         <Metric label="Downloads" value={summary.downloading} />
         <Metric label="Stalled downloads" value={summary.stalled} tone="warning" />
         <Metric label="Hanging" value={summary.hanging} tone="danger" />
+        <Metric label="Arr queue" value={summary.inArrQueue} />
       </section>
 
       <section className={`connection-card${isError ? " error" : ""}`}>
@@ -137,6 +140,7 @@ export default function App() {
         <ConnectionItem label="Threshold" value={config ? `${config.stalledThresholdMinutes} min` : "-"} />
         <ConnectionItem label="Polling" value={config ? `${config.pollIntervalSeconds}s` : "-"} />
       </section>
+      <ArrErrors errors={arrErrors} />
 
       <section className="toolbar">
         <div className="tabs" role="tablist" aria-label="Torrent filters">
@@ -174,6 +178,7 @@ export default function App() {
               <tr>
                 <th>Name</th>
                 <th>State</th>
+                <th>Arr queue</th>
                 <th>Progress</th>
                 <th>Stalled for</th>
                 <th>Last activity</th>
@@ -218,6 +223,19 @@ function ConnectionItem({ label, value }) {
   );
 }
 
+function ArrErrors({ errors }) {
+  if (errors.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="alert">
+      <strong>Arr queue warnings:</strong>{" "}
+      {errors.map((error) => `${error.appName}: ${error.message}`).join(" | ")}
+    </section>
+  );
+}
+
 function TorrentRow({ torrent }) {
   const stateClass = torrent.isOverThreshold ? "danger" : torrent.isStalledDownload ? "warning" : "";
   const stalledText = torrent.isStalledDownload ? duration(torrent.stalledForMs) : "-";
@@ -231,6 +249,9 @@ function TorrentRow({ torrent }) {
       </td>
       <td>
         <span className={`pill ${stateClass}`.trim()}>{torrent.state || "unknown"}</span>
+      </td>
+      <td>
+        <ArrQueueBadges queues={torrent.arrQueues || []} />
       </td>
       <td>
         <div className="progress">
@@ -249,6 +270,22 @@ function TorrentRow({ torrent }) {
       <td>{eta(torrent.eta)}</td>
       <td>{bytes(torrent.size)}</td>
     </tr>
+  );
+}
+
+function ArrQueueBadges({ queues }) {
+  if (queues.length === 0) {
+    return <span className="muted">-</span>;
+  }
+
+  return (
+    <div className="arr-badges">
+      {queues.map((queue) => (
+        <span className="pill arr" title={queue.title} key={`${queue.appId}:${queue.downloadId || queue.title}`}>
+          {queue.appName}
+        </span>
+      ))}
+    </div>
   );
 }
 

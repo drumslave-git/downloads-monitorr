@@ -101,7 +101,7 @@ h1 {
 
 .status-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 14px;
 }
@@ -155,6 +155,15 @@ h1 {
 
 .connection-card.error {
   border-color: rgba(239, 68, 68, 0.6);
+}
+
+.alert {
+  margin: -4px 0 18px;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 16px;
+  background: rgba(245, 158, 11, 0.1);
+  color: #fde68a;
+  padding: 12px 14px;
 }
 
 .toolbar {
@@ -232,7 +241,7 @@ h1 {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1040px;
+  min-width: 1140px;
 }
 
 th,
@@ -284,6 +293,18 @@ tbody tr:hover {
 .pill.warning {
   background: rgba(245, 158, 11, 0.14);
   color: #fde68a;
+}
+
+.pill.arr {
+  background: rgba(56, 189, 248, 0.14);
+  color: #bae6fd;
+}
+
+.arr-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 120px;
 }
 
 .progress {

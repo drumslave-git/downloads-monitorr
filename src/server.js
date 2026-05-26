@@ -14,11 +14,14 @@ const config = {
   qbittorrentUrl: normalizeBaseUrl(process.env.QBITTORRENT_URL || "http://localhost:8080"),
   username: process.env.QBITTORRENT_USERNAME || "",
   password: process.env.QBITTORRENT_PASSWORD || "",
+  arrApps: buildArrAppConfigs(),
 };
 
 const state = {
   lastFetchAt: null,
   lastError: null,
+  arrLastFetchAt: null,
+  arrErrors: [],
   torrents: [],
   pollInFlight: null,
 };
@@ -150,12 +153,137 @@ class QBittorrentClient {
   }
 }
 
+class ArrQueueClient {
+  constructor({ id, name, url, apiKey }) {
+    this.id = id;
+    this.name = name;
+    this.baseUrl = normalizeBaseUrl(url);
+    this.apiKey = apiKey;
+  }
+
+  async getQueueItems() {
+    const pageSize = 500;
+    const records = [];
+
+    for (let page = 1; page <= 20; page += 1) {
+      const response = await fetch(this.apiUrl("/api/v3/queue", {
+        page,
+        pageSize,
+        includeMovie: true,
+        includeSeries: true,
+        includeEpisode: true,
+        includeUnknownMovieItems: true,
+        includeUnknownSeriesItems: true,
+      }), {
+        headers: {
+          Accept: "application/json",
+          "X-Api-Key": this.apiKey,
+          "User-Agent": "downloads-monitorr/1.0",
+        },
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`${this.name} queue request failed: HTTP ${response.status} ${text || response.statusText}`);
+      }
+
+      const payload = await response.json();
+      const pageRecords = Array.isArray(payload) ? payload : payload.records || [];
+      records.push(...pageRecords.map((item) => this.normalizeQueueItem(item)));
+
+      if (Array.isArray(payload) || records.length >= numberOrZero(payload.totalRecords) || pageRecords.length < pageSize) {
+        break;
+      }
+    }
+
+    return records;
+  }
+
+  normalizeQueueItem(item) {
+    return {
+      appId: this.id,
+      appName: this.name,
+      title: item.title || item.sourceTitle || item.movie?.title || item.series?.title || "Unknown item",
+      downloadId: item.downloadId || item.downloadClientId || "",
+      status: item.status || "",
+      trackedDownloadStatus: item.trackedDownloadStatus || "",
+      protocol: item.protocol || "",
+    };
+  }
+
+  apiUrl(pathname, query = {}) {
+    const basePath = this.baseUrl.pathname.replace(/\/+$/, "");
+    const apiPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
+    const url = new URL(`${basePath}${apiPath}`, this.baseUrl.origin);
+
+    for (const [key, value] of Object.entries(query)) {
+      url.searchParams.set(key, String(value));
+    }
+
+    return url;
+  }
+}
+
+class ArrQueueService {
+  constructor(apps) {
+    this.clients = apps.map((app) => new ArrQueueClient(app));
+  }
+
+  async getQueueIndex() {
+    const results = await Promise.all(
+      this.clients.map(async (client) => {
+        try {
+          return {
+            client,
+            items: await client.getQueueItems(),
+            error: null,
+          };
+        } catch (error) {
+          return {
+            client,
+            items: [],
+            error,
+          };
+        }
+      }),
+    );
+
+    const index = {
+      byDownloadId: new Map(),
+      byTitle: new Map(),
+      errors: [],
+      apps: this.clients.map((client) => ({
+        id: client.id,
+        name: client.name,
+      })),
+    };
+
+    for (const result of results) {
+      if (result.error) {
+        index.errors.push({
+          appId: result.client.id,
+          appName: result.client.name,
+          message: result.error.message,
+        });
+        continue;
+      }
+
+      for (const item of result.items) {
+        addQueueMatch(index.byDownloadId, normalizeDownloadId(item.downloadId), item);
+        addQueueMatch(index.byTitle, normalizeQueueTitle(item.title), item);
+      }
+    }
+
+    return index;
+  }
+}
+
 class TorrentTracker {
   constructor() {
     this.records = new Map();
   }
 
-  update(rawTorrents) {
+  update(rawTorrents, queueIndex) {
     const now = Date.now();
     const nextRecords = new Map();
 
@@ -180,10 +308,10 @@ class TorrentTracker {
 
     this.records = nextRecords;
 
-    return rawTorrents.map((torrent) => this.decorateTorrent(torrent, now));
+    return rawTorrents.map((torrent) => this.decorateTorrent(torrent, now, getArrQueueMatches(torrent, queueIndex)));
   }
 
-  decorateTorrent(torrent, now) {
+  decorateTorrent(torrent, now, arrQueues) {
     const record = this.records.get(torrent.hash);
     const stalledForMs = record?.stalledSince ? now - record.stalledSince : 0;
     const stateForMs = record?.stateSince ? now - record.stateSince : 0;
@@ -213,6 +341,8 @@ class TorrentTracker {
       stateForMs,
       stalledSince: record?.stalledSince || null,
       stalledForMs,
+      arrQueues,
+      arrQueueApps: arrQueues.map((queue) => queue.appName),
       isDownload: numberOrZero(torrent.progress) < 1,
       isStalledDownload: Boolean(record?.stalledSince),
       isOverThreshold: stalledForMs >= STALLED_THRESHOLD_MS,
@@ -221,6 +351,7 @@ class TorrentTracker {
 }
 
 const client = new QBittorrentClient(config);
+const arrQueueService = new ArrQueueService(config.arrApps);
 const tracker = new TorrentTracker();
 
 async function pollTorrents() {
@@ -228,14 +359,20 @@ async function pollTorrents() {
     return state.pollInFlight;
   }
 
-  state.pollInFlight = client
-    .getTorrents()
-    .then((torrents) => {
-      state.torrents = tracker.update(Array.isArray(torrents) ? torrents : []);
-      state.lastFetchAt = Date.now();
-      state.lastError = null;
-      return state.torrents;
-    })
+  state.pollInFlight = (async () => {
+    const [torrentResult, queueIndex] = await Promise.all([
+      client.getTorrents(),
+      arrQueueService.getQueueIndex(),
+    ]);
+    const torrents = Array.isArray(torrentResult) ? torrentResult : [];
+
+    state.torrents = tracker.update(torrents, queueIndex);
+    state.arrLastFetchAt = Date.now();
+    state.arrErrors = queueIndex.errors;
+    state.lastFetchAt = Date.now();
+    state.lastError = null;
+    return state.torrents;
+  })()
     .catch((error) => {
       state.lastError = {
         message: error.message,
@@ -298,14 +435,24 @@ function buildStatusPayload() {
     lastError: state.lastError,
     config: {
       qbittorrentUrl: config.qbittorrentUrl.origin,
+      arrApps: config.arrApps.map((app) => ({
+        id: app.id,
+        name: app.name,
+        configured: true,
+      })),
       pollIntervalSeconds: Math.round(POLL_INTERVAL_MS / 1000),
       stalledThresholdMinutes: Math.round(STALLED_THRESHOLD_MS / 60000),
+    },
+    arr: {
+      lastFetchAt: state.arrLastFetchAt,
+      errors: state.arrErrors,
     },
     summary: {
       total: torrents.length,
       downloading: torrents.filter((torrent) => torrent.isDownload).length,
       stalled: stalled.length,
       hanging: hanging.length,
+      inArrQueue: torrents.filter((torrent) => torrent.arrQueues.length > 0).length,
     },
     torrents,
   };
@@ -424,6 +571,89 @@ function normalizeBaseUrl(value) {
   const url = new URL(value);
   url.pathname = url.pathname.replace(/\/+$/, "");
   return url;
+}
+
+function buildArrAppConfigs() {
+  return [
+    buildArrAppConfig("radarr", "Radarr", "RADARR"),
+    buildArrAppConfig("sonarr", "Sonarr", "SONARR"),
+    buildArrAppConfig("whisparr", "Whisparr", "WHISPARR"),
+  ].filter(Boolean);
+}
+
+function buildArrAppConfig(id, name, prefix) {
+  const url = process.env[`${prefix}_URL`];
+  const apiKey = process.env[`${prefix}_API_KEY`];
+
+  if (!url && !apiKey) {
+    return null;
+  }
+
+  if (!url || !apiKey) {
+    throw new Error(`${prefix}_URL and ${prefix}_API_KEY must both be set when configuring ${name}`);
+  }
+
+  return {
+    id,
+    name,
+    url,
+    apiKey,
+  };
+}
+
+function getArrQueueMatches(torrent, queueIndex) {
+  if (!queueIndex) {
+    return [];
+  }
+
+  const matches = [
+    ...getQueueMatches(queueIndex.byDownloadId, normalizeDownloadId(torrent.hash)),
+    ...getQueueMatches(queueIndex.byTitle, normalizeQueueTitle(torrent.name)),
+  ];
+  const seen = new Set();
+
+  return matches.filter((match) => {
+    const key = `${match.appId}:${match.downloadId || match.title}`;
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function getQueueMatches(index, key) {
+  if (!key || !index) {
+    return [];
+  }
+
+  return index.get(key) || [];
+}
+
+function addQueueMatch(index, key, item) {
+  if (!key) {
+    return;
+  }
+
+  const matches = index.get(key) || [];
+  matches.push(item);
+  index.set(key, matches);
+}
+
+function normalizeDownloadId(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeQueueTitle(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\.[a-z0-9]{2,5}$/, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function extractSessionCookie(headers) {
